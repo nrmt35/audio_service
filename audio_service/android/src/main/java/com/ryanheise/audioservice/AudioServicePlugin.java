@@ -212,7 +212,7 @@ public class AudioServicePlugin implements FlutterPlugin, ActivityAware {
     private final MediaBrowserCompat.ConnectionCallback connectionCallback = new MediaBrowserCompat.ConnectionCallback() {
         @Override
         public void onConnected() {
-            if (applicationContext == null) return; 
+            if (applicationContext == null) return;
             try {
                 MediaSessionCompat.Token token = mediaBrowser.getSessionToken();
                 mediaController = new MediaControllerCompat(applicationContext, token);
@@ -1179,8 +1179,17 @@ public class AudioServicePlugin implements FlutterPlugin, ActivityAware {
     private static MediaBrowserCompat.MediaItem rawToMediaItem(Map<?, ?> rawMediaItem) {
         MediaMetadataCompat mediaMetadata = createMediaMetadata(rawMediaItem);
         final MediaDescriptionCompat description = addExtrasToMediaDescription(mediaMetadata.getDescription(), (Map<?, ?>)rawMediaItem.get("extras"));
+        // MediaItem.playable is nullable, and a null means neither browsable nor
+        // playable: a row that does nothing when tapped. Message rows ("no
+        // connection", "sign in") need that, since a playable row makes the car jump
+        // to the playback view and a browsable one pushes a screen.
         final Boolean playable = (Boolean)rawMediaItem.get("playable");
-        return new MediaBrowserCompat.MediaItem(description, playable ? MediaBrowserCompat.MediaItem.FLAG_PLAYABLE : MediaBrowserCompat.MediaItem.FLAG_BROWSABLE);
+        final int flags = playable == null
+                ? 0
+                : (playable
+                ? MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
+                : MediaBrowserCompat.MediaItem.FLAG_BROWSABLE);
+        return new MediaBrowserCompat.MediaItem(description, flags);
     }
 
     private static List<MediaSessionCompat.QueueItem> raw2queue(List<Map<?, ?>> rawQueue) {
