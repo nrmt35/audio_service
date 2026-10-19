@@ -1026,73 +1026,97 @@ class AudioService {
     return handler;
   }
 
+  /// Completes once the latest media item has been handed to the platform.
+  ///
+  /// Sending it can wait on an art cache lookup while playback state goes out
+  /// at once, so on a track change the new position reached the platform under
+  /// the old item's metadata: CarPlay showed the old title and art at 0:00 for
+  /// a moment. [_observePlaybackState] waits on this first.
+  static Future<void> _mediaItemSent = Future<void>.value();
+
   static Future<void> _observeMediaItem() async {
     Object? artFetchOperationId;
     _handler.mediaItem.listen((mediaItem) async {
       if (mediaItem == null) {
         return;
       }
-      final operationId = Object();
-      artFetchOperationId = operationId;
-      final artUri = mediaItem.artUri;
-      if (artUri == null || artUri.scheme == 'content') {
-        _platform
-            .setMediaItem(
-                SetMediaItemRequest(mediaItem: mediaItem._toMessage()))
-            .catchError(_asyncError.add);
-      } else {
-        /// Sends media item to the platform.
-        /// We potentially need to fetch the art before that.
-        Future<void> sendToPlatform(String? filePath) async {
-          final extras = mediaItem.extras;
-          final platformMediaItem = mediaItem.copyWith(
-            extras: <String, dynamic>{
-              if (extras != null) ...extras,
-              'artCacheFile': filePath,
-            },
-          );
-          await _platform.setMediaItem(
-              SetMediaItemRequest(mediaItem: platformMediaItem._toMessage()));
-        }
+      final sent = Completer<void>();
+      _mediaItemSent = sent.future;
+      void markSent() {
+        if (!sent.isCompleted) sent.complete();
+      }
 
-        if (artUri.scheme == 'file') {
-          sendToPlatform(artUri.toFilePath()).catchError(_asyncError.add);
+      try {
+        final operationId = Object();
+        artFetchOperationId = operationId;
+        final artUri = mediaItem.artUri;
+        if (artUri == null || artUri.scheme == 'content') {
+          _platform
+              .setMediaItem(
+                  SetMediaItemRequest(mediaItem: mediaItem._toMessage()))
+              .catchError(_asyncError.add);
+          markSent();
         } else {
-          // Try to load a cached file from memory.
-          final fileInfo =
-              await cacheManager.getFileFromMemory(artUri.toString());
-          final filePath = fileInfo?.file.path;
-          if (operationId != artFetchOperationId) {
-            return;
+          /// Sends media item to the platform.
+          /// We potentially need to fetch the art before that.
+          Future<void> sendToPlatform(String? filePath) async {
+            final extras = mediaItem.extras;
+            final platformMediaItem = mediaItem.copyWith(
+              extras: <String, dynamic>{
+                if (extras != null) ...extras,
+                'artCacheFile': filePath,
+              },
+            );
+            final request = _platform.setMediaItem(
+                SetMediaItemRequest(mediaItem: platformMediaItem._toMessage()));
+            markSent();
+            await request;
           }
 
-          if (filePath != null) {
-            // If we successfully downloaded the art call to platform.
-            sendToPlatform(filePath).catchError(_asyncError.add);
+          if (artUri.scheme == 'file') {
+            sendToPlatform(artUri.toFilePath()).catchError(_asyncError.add);
           } else {
-            // We haven't fetched the art yet, so show the metadata now, and again
-            // after we load the art.
-            try {
-              await _platform.setMediaItem(
-                  SetMediaItemRequest(mediaItem: mediaItem._toMessage()));
-            } catch (e) {
-              _asyncError.add(e);
-              return;
-            }
+            // Try to load a cached file from memory.
+            final fileInfo =
+                await cacheManager.getFileFromMemory(artUri.toString());
+            final filePath = fileInfo?.file.path;
             if (operationId != artFetchOperationId) {
               return;
             }
-            // Load the art.
-            final loadedFilePath = await _loadArtwork(mediaItem);
-            if (operationId != artFetchOperationId) {
-              return;
-            }
-            // If we successfully downloaded the art, call to platform.
-            if (loadedFilePath != null) {
-              sendToPlatform(loadedFilePath).catchError(_asyncError.add);
+
+            if (filePath != null) {
+              // If we successfully downloaded the art call to platform.
+              sendToPlatform(filePath).catchError(_asyncError.add);
+            } else {
+              // We haven't fetched the art yet, so show the metadata now, and again
+              // after we load the art.
+              try {
+                final request = _platform.setMediaItem(
+                    SetMediaItemRequest(mediaItem: mediaItem._toMessage()));
+                markSent();
+                await request;
+              } catch (e) {
+                _asyncError.add(e);
+                return;
+              }
+              if (operationId != artFetchOperationId) {
+                return;
+              }
+              // Load the art.
+              final loadedFilePath = await _loadArtwork(mediaItem);
+              if (operationId != artFetchOperationId) {
+                return;
+              }
+              // If we successfully downloaded the art, call to platform.
+              if (loadedFilePath != null) {
+                sendToPlatform(loadedFilePath).catchError(_asyncError.add);
+              }
             }
           }
         }
+      } finally {
+        // Also when superseded or failed, so playback state never waits on it.
+        markSent();
       }
     });
   }
@@ -1127,6 +1151,7 @@ class AudioService {
     var previousState = _handler.playbackState.nvalue;
     await for (var playbackState in _handler.playbackState) {
       try {
+        await _mediaItemSent;
         await _platform
             .setState(SetStateRequest(state: playbackState._toMessage()));
         if (playbackState.processingState == AudioProcessingState.idle &&

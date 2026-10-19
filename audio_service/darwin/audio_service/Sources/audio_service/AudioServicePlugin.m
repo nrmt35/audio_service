@@ -193,7 +193,16 @@ static NSMutableDictionary *nowPlayingInfo = nil;
         result(@{});
     } else if ([@"setMediaItem" isEqualToString:call.method]) {
         NSDictionary *args = (NSDictionary *)call.arguments;
+        id oldId = mediaItem[@"id"];
         mediaItem = args[@"mediaItem"];
+        // A different item starts from 0. Without this its title and art went
+        // out with the previous item's position, and the 0:00 from the state
+        // that follows (the Dart side sends it after the item) landed as a
+        // second update: CarPlay showed the new track at the old position for
+        // a moment. The state still corrects it if playback resumes elsewhere.
+        if (![mediaItem[@"id"] isEqual:oldId]) {
+            position = @(0);
+        }
         NSString* artUri = mediaItem[@"artUri"];
         artwork = nil;
         if (![artUri isEqual: [NSNull null]]) {
